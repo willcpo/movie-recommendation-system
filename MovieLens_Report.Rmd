@@ -1,0 +1,671 @@
+---
+title: "Creating Movie Recommendation Systems using Subgroup Analysis"
+author: "Will Powers"
+date: "12/28/2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r code, echo=FALSE, results = 'hide', fig.show='hide', message=FALSE, warning=FALSE}
+##########################################################
+# Create Helper Functions
+##########################################################
+
+#Function to calculate the Root Mean Squared Error
+calcRMSE <- function(predictedResult, actualResult){
+  # calculate difference between the predicted and actual results
+  error <- predictedResult - actualResult
+  # square the error
+  squaredError <- error^2
+  #find the mean of all the squared errors
+  meanSquaredError <- mean(squaredError)
+  # take the square root of the mean
+  sqrt(meanSquaredError)
+}
+
+##########################################################
+# Create edx set, validation set (final hold-out test set)
+##########################################################
+
+# Note: this process could take a couple of minutes
+# Install Required Packages
+options(install.packages.compile.from.source = "always")
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+if(!require(data.table)) install.packages("data.table", repos = "http://cran.us.r-project.org")
+if(!require(forecast)) install.packages('forecast', dependencies = TRUE, repos = "http://cran.us.r-project.org")
+
+
+
+library(tidyverse)
+library(caret)
+library(data.table)
+library(forecast)
+
+# MovieLens 10M dataset:
+# https://grouplens.org/datasets/movielens/10m/
+# http://files.grouplens.org/datasets/movielens/ml-10m.zip
+
+#download, read and label files
+dl <- tempfile()
+download.file("http://files.grouplens.org/datasets/movielens/ml-10m.zip", dl)
+
+ratings <- fread(text = gsub("::", "\t", readLines(unzip(dl, "ml-10M100K/ratings.dat"))),
+                 col.names = c("userId", "movieId", "rating", "timestamp"))
+
+movies <- str_split_fixed(readLines(unzip(dl, "ml-10M100K/movies.dat")), "\\::", 3)
+colnames(movies) <- c("movieId", "title", "genres")
+
+movies <- as.data.frame(movies) %>% mutate(movieId = as.numeric(movieId),
+                                           title = as.character(title),
+                                           genres = as.character(genres))
+
+movielens <- left_join(ratings, movies, by = "movieId")
+
+# Validation set will be 10% of MovieLens data
+set.seed(1, sample.kind="Rounding") # if using R 3.5 or earlier, use `set.seed(1)`
+test_index <- createDataPartition(y = movielens$rating, times = 1, p = 0.1, list = FALSE)
+edx <- movielens[-test_index,]
+temp <- movielens[test_index,]
+
+# Make sure userId and movieId in validation set are also in edx set
+validation <- temp %>% 
+  semi_join(edx, by = "movieId") %>%
+  semi_join(edx, by = "userId")
+
+# Add rows removed from validation set back into edx set
+removed <- anti_join(temp, validation)
+edx <- rbind(edx, removed)
+
+rm(dl, ratings, movies, test_index, temp, movielens, removed)
+
+##########################################################
+# Data Exploration
+##########################################################
+
+# View General Structure of Data 
+head(edx)
+
+# Tests if observations are properly randomized within data set
+edxRowIndexes <- 1:length(edx$rating)
+rowCorrelation <- cor(edxRowIndexes, edx$rating)
+rowCorrelation
+
+# Summary Statistics for Ratings 
+All_Ratings <- edx$rating
+# Helper function for Mode statistic
+getMode <- function(list){
+  unique(list)[which.max(tabulate(match(list, unique(list))))]  
+}
+#Number entries
+nrow(All_Ratings)
+
+## mean
+ratingMean <- mean(All_Ratings)
+ratingMean
+## median
+ratingMedian <- median(All_Ratings)
+ratingMedian
+## mode
+ratingMode <- getMode(All_Ratings)
+ratingMode
+
+# Histograms
+
+# Distribution of All Ratings
+hist(All_Ratings)
+# Distribution of Summary Statistics per User
+## Set-Up
+userStats <- edx %>% group_by(userId) %>% summarise(average=mean(rating), median=median(rating), mode=getMode(rating), amt=n())
+Mean_Ratings_for_Each_User <- userStats$average
+Median_Ratings_for_Each_User <- userStats$median
+Mode_Ratings_for_Each_User <- userStats$mode
+Number_Of_Ratings_for_Each_User <- userStats$amt
+
+# Histogram of User Mean Scores
+hist(Mean_Ratings_for_Each_User)
+# Histogram of User Median Scores
+hist(Median_Ratings_for_Each_User)
+
+# Histogram of User Mode Scores
+hist(Mode_Ratings_for_Each_User)
+
+# Histogram of Number of Scores per User
+hist(Number_Of_Ratings_for_Each_User)
+
+# Distribution of Summary Statistics per Movie
+## Set-Up
+movieStats <- edx %>% group_by(movieId) %>% summarise(average=mean(rating), median=median(rating), mode=getMode(rating), amt=n())
+Mean_Ratings_for_Each_Movie <- movieStats$average
+Median_Ratings_for_Each_Movie <- movieStats$median
+Mode_Ratings_for_Each_Movie <- movieStats$mode
+Number_Of_Ratings_for_Each_Movie <- movieStats$amt
+
+# Histogram of Movie Mean Scores
+hist(Mean_Ratings_for_Each_Movie)
+# Histogram of Movie Median Scores
+hist(Median_Ratings_for_Each_Movie)
+# Histogram of Movie Mode Scores
+hist(Mode_Ratings_for_Each_Movie)
+# Histogram of Number of Scores per Movie
+hist(Number_Of_Ratings_for_Each_Movie)
+
+# Distribution of Summary Statistics per unique genre set
+## Set-Up
+genresStats <- edx %>% group_by(genres) %>% summarise(average=mean(rating), median=median(rating), mode=getMode(rating), amt=n())
+Mean_Ratings_for_Each_Set_of_Genres <- genresStats$average
+Median_Ratings_for_Each_Set_of_Genres <- genresStats$median
+Mode_Ratings_for_Each_Set_of_Genres <- genresStats$mode
+Number_Of_Ratings_for_Each_Set_of_Genres <- genresStats$amt
+
+# Histogram of Movie Mean Scores
+hist(Mean_Ratings_for_Each_Set_of_Genres)
+# Histogram of Movie Median Scores
+hist(Median_Ratings_for_Each_Set_of_Genres)
+# Histogram of Movie Mode Scores
+hist(Mode_Ratings_for_Each_Set_of_Genres)
+# Histogram of Number of Scores per Genres
+hist(Number_Of_Ratings_for_Each_Set_of_Genres)
+
+
+##########################################################
+# Data Preparation
+##########################################################
+
+# Get 3 most popular Genres for Mutation
+
+## find unique genre sets
+uniqueGenres <- unique(edx$genres)
+## find unique genres used in sets
+baseGenres <- uniqueGenres[!str_detect(uniqueGenres, "\\|")]
+## Find frequencies of each genre
+genreFrequencies <- sapply(baseGenres, function(genre){
+  sum(str_detect(edx$genres, genre))
+})
+# sort and print
+sortGenreFreq <- sort(genreFrequencies, decreasing=TRUE)
+sortGenreFreq
+
+edx <- edx %>% mutate(isDrama=str_detect(edx$genres, "Drama"))
+edx <- edx %>% mutate(isComedy=str_detect(edx$genres, "Comedy"))
+edx <- edx %>% mutate(isAction=str_detect(edx$genres, "Action"))
+
+##########################################################
+# create train and test set
+##########################################################
+
+test_index2 <- createDataPartition(edx$userId, times = 1, p = 0.5, list = FALSE)
+crossValidation1 <- edx[test_index2, ]
+crossValidation2 <- edx[-test_index2, ]
+
+##########################################################
+# Create Model w/ Train Set 
+##########################################################
+
+# Create Simplistic Prediction Model based off mean score for all movies
+
+means <- rep(mean(crossValidation1$rating), nrow(crossValidation1))
+
+crossValidation1 <- crossValidation1 %>% mutate(prediction=means)
+
+# Test Model
+baseRMSE <- calcRMSE(crossValidation1$prediction, crossValidation1$rating)
+baseRMSE
+# Modify the model by adding the average effect for 
+# a user's average rating to their predicted ratings
+
+userEffect <- crossValidation1 %>% 
+  group_by(userId) %>%
+  summarize(userEffect = mean(rating-prediction))
+
+crossValidation1 <- crossValidation1 %>%
+  left_join(userEffect, by="userId")
+
+crossValidation1 <- crossValidation1 %>% mutate(prediction=prediction + userEffect)
+
+# Test Model
+userRMSE <- calcRMSE(crossValidation1$prediction, crossValidation1$rating)
+userRMSE
+# Create a model adding the average effect for 
+# a genre's average rating to its predicted ratings
+
+genresEffect <- crossValidation1 %>% 
+  group_by(genres) %>%
+  summarize(genresEffect = mean(rating-prediction))
+
+crossValidation1 <- crossValidation1 %>%
+  left_join(genresEffect, by="genres")
+
+crossValidation1 <- crossValidation1 %>% mutate(prediction=prediction + genresEffect)
+
+# Test Model
+genreRMSE <- calcRMSE(crossValidation1$prediction, crossValidation1$rating)
+genreRMSE
+# Create a model adding the average error for 
+# a movie's average rating to its predicted ratings
+
+movieEffect <- crossValidation1 %>% 
+  group_by(movieId) %>%
+  summarize(movieEffect = mean(rating-prediction))
+
+crossValidation1 <- crossValidation1 %>%
+  left_join(movieEffect, by="movieId")
+
+crossValidation1 <- crossValidation1 %>% mutate(prediction=prediction + movieEffect)
+
+# Test Model
+movieRMSE <- calcRMSE(crossValidation1$prediction, crossValidation1$rating)
+movieRMSE
+# Create a model adding the average error for 
+# comedy vs non-comedy movie average ratings to its predicted ratings
+
+isComedyEffect <- crossValidation1 %>% 
+  group_by(isComedy) %>%
+  summarize(isComedyEffect = mean(rating-prediction))
+
+crossValidation1 <- crossValidation1 %>%
+  left_join(isComedyEffect, by="isComedy")
+
+crossValidation1 <- crossValidation1 %>% mutate(prediction=prediction + isComedyEffect)
+
+# Test Model
+isComedyRMSE <- calcRMSE(crossValidation1$prediction, crossValidation1$rating)
+isComedyRMSE
+
+# Create a model adding the average error for 
+# drama vs non-drama movie average ratings to its predicted ratings
+
+isDramaEffect <- crossValidation1 %>% 
+  group_by(isDrama) %>%
+  summarize(isDramaEffect = mean(rating-prediction))
+
+crossValidation1 <- crossValidation1 %>%
+  left_join(isDramaEffect, by="isDrama")
+
+crossValidation1 <- crossValidation1 %>% mutate(prediction=prediction + isDramaEffect)
+
+# Test Model
+isDramaRMSE <- calcRMSE(crossValidation1$prediction, crossValidation1$rating)
+isDramaRMSE
+
+# Create a model adding the average error for 
+# action vs non-action movie average ratings to its predicted ratings
+
+isActionEffect <- crossValidation1 %>% 
+  group_by(isAction) %>%
+  summarize(isActionEffect = mean(rating-prediction))
+
+crossValidation1 <- crossValidation1 %>%
+  left_join(isActionEffect, by="isAction")
+
+crossValidation1 <- crossValidation1 %>% mutate(prediction=prediction + isActionEffect)
+
+# Test Model
+isActionRMSE <- calcRMSE(crossValidation1$prediction, crossValidation1$rating)
+isActionRMSE
+
+##########################################################
+# Create Regularized Model w/ Train Set 
+##########################################################
+# Create Simplistic Prediction Model based off mean score for all movies
+
+#Create an array of possible lambda values
+lambda <- seq(2, 5, .1)
+
+# Iterate over lambda values and train the normalized model with each
+RegularizeRMSE <- sapply(lambda, function(l){
+
+  means <- rep(mean(crossValidation2$rating), nrow(crossValidation2))
+  
+  crossValidation2 <- crossValidation2 %>% mutate(prediction=means)
+  
+  # Modify the model by adding the average error for 
+  # a user's average rating to their predicted ratings w/ normalization
+  
+  userEffect <- crossValidation2 %>% 
+    group_by(userId) %>%
+    summarize(userEffect = sum(rating-prediction)/(n()+l))
+  
+  crossValidation2 <- crossValidation2 %>%
+    left_join(userEffect, by="userId")
+  
+  crossValidation2 <- crossValidation2 %>% mutate(prediction=prediction + userEffect)
+  
+  # Create a model adding the average error for 
+  # a genre's average rating to its predicted ratings w/ normalization
+  
+  genresEffect <- crossValidation2 %>% 
+    group_by(genres) %>%
+    summarize(genresEffect = sum(rating-prediction)/(n()+l))
+  
+  crossValidation2 <- crossValidation2 %>%
+    left_join(genresEffect, by="genres")
+  
+  crossValidation2 <- crossValidation2 %>% mutate(prediction=prediction + genresEffect)
+  
+  # Create a model adding the average error for 
+  # a movie's average rating to its predicted ratings w/ normalization
+  
+  movieEffect <- crossValidation2 %>% 
+    group_by(movieId) %>%
+    summarize(movieEffect = sum(rating-prediction)/(n()+l))
+  
+  crossValidation2 <- crossValidation2 %>%
+    left_join(movieEffect, by="movieId")
+  
+  crossValidation2 <- crossValidation2 %>% mutate(prediction=prediction + movieEffect)
+  
+  # Test Model
+  calcRMSE(crossValidation2$prediction, crossValidation2$rating)
+})
+# correspond lambda values to RMSE values
+RMSE_For_Lambda <- RegularizeRMSE
+RegularizeRMSE <- cbind(lambda, RMSE_For_Lambda)
+# plot lambda values by RMSE
+plot(RegularizeRMSE)
+#Print Values
+RegularizeRMSE
+#Find index of min RMSE 
+minIndex <- which.min(RegularizeRMSE[,2])
+#Print Lambda values corresponding to min RMSE
+RegularizeRMSEOptimizedLambda <- RegularizeRMSE
+
+
+##########################################################
+#	Validate RMSE
+##########################################################
+#Start clock for timing function
+startTime <- proc.time()
+
+minLambda = 3.5
+
+means <- rep(mean(validation$rating), nrow(validation))
+
+validation <- validation %>% mutate(prediction=means)
+
+baseValidationRMSE <- calcRMSE(validation$prediction, validation$rating)
+
+# Modify the model by adding the average error for 
+# a user's average rating to their predicted ratings
+
+userEffect <- validation %>% 
+  group_by(userId) %>%
+  summarize(userEffect = sum(rating-prediction)/(n()+minLambda))
+
+validation <- validation %>%
+  left_join(userEffect, by="userId")
+
+validation <- validation %>% mutate(prediction=prediction + userEffect)
+
+# Create a model adding the average error for 
+# a genre's average rating to its predicted ratings
+
+genresEffect <- validation %>% 
+  group_by(genres) %>%
+  summarize(genresEffect = sum(rating-prediction)/(n()+minLambda))
+
+validation <- validation %>%
+  left_join(genresEffect, by="genres")
+
+validation <- validation %>% mutate(prediction=prediction + genresEffect)
+
+# Create a model adding the average error for 
+# a movie's average rating to its predicted ratings
+
+movieEffect <- validation %>% 
+  group_by(movieId) %>%
+  summarize(movieEffect = sum(rating-prediction)/(n()+minLambda))
+
+validation <- validation %>%
+  left_join(movieEffect, by="movieId")
+
+validation <- validation %>% mutate(prediction=prediction + movieEffect)
+
+totalTime <- proc.time() - startTime
+
+##########################################################
+#Performance
+##########################################################
+
+# Test Model
+validationRMSE <- calcRMSE(validation$prediction, validation$rating)
+validationRMSE
+# Total Time Taken in Seconds
+totalTimeElapsed <- totalTime["elapsed"]
+totalTimeElapsed
+
+```
+
+
+#	Overview 
+
+## Motivation
+  In 2006 Netflix created a challenge entitled the "Netflix Challenge." The goal was to encourage developers to  create a data model trained from a database of 100 million user ratings that would more accurately predict a given user's rating on a movie than Netflix's software at the time. 
+  
+##	Project Goals
+
+  The goal of this paper is to attempt the objectives of that competition to create an efficient prediction model, using a smaller version of that database, both developed by "GroupLens".
+
+## The Dataset 
+  The Dataset used for this paper is a modified version of the original data set containing only ~10 million user ratings. The dataset is developed by the creators of the original data set, GroupLens, a research lab at the University of Minnesota. A brief preview of the data set is below:
+
+\small
+```{r previewDataSet, echo=FALSE}
+head(edx)
+```
+\normalsize
+
+##	Key Steps
+  The ideal method for predicting would be linear regression. However, due to the size of the data set and my hardware limitations, a simpler approach will be needed.
+  The prediction method that will be used for this is a modeling approach where we first assume the most simplistic model, that every predicted rating is the average of all movie ratings. 
+  Then we will then look at subgroups of the data, split by certain characteristics, and see how the expected value of these subgroups differs from the mean of all ratings. Then a better model for a given predicted rating would be to take the average rating and add the difference of the rating's subgroup's average to the total average. 
+  Then to continually make the model better, we will create more partitions and compare the subgroup means to our model's predictions in order to generate more accurate models in a similar way to the previous step.
+  To see this mathematically, we will define the prediction for $rating_i$ as $Y_i$ and after each step of splitting up the data, we will have $partition_j$. The rating we wish to predict will be in a certain subgroup of the data, which we can denote as $subgroup_{ij}$ and we would like to find the average of that subgroup, $subgroup\_average_{ij}$. Then would like to find the difference of that subgroup average from the prediction provided by the previous terms of the model, denoted $subgroup\_error_{ij}$ or $SGE_{i,j}$ for short. Therefore for N partitions of the data, we can mathematically describe our prediction for $rating_i$ as:
+ $$Y_i = mean\ +\ SGE_{1,j}\ +\ SGE_{2,j}\ + ... +\ SGE_{n,j}$$
+  After we train the model in this way we will try to use regularization strategies to try and discount the smaller subgroups of data that may create outliers in our data, such as movies that receive very few ratings. 
+  Finally, we will test the accuracy of our model by predicting the rating on a previously unused data set that was partitioned for validation purposes and then we will find the Root Mean Square Error (RMSE), the same method for determining the accuracy in the original Netflix Competition.
+
+#	Methods & Analysis
+## Process 
+  We will employ various techniques to create the best possible prediction. Those techniques will be outlined briefly in this section.
+  First, we must clean and prepare our data set for modeling. Next we will explore the data and visualize it so we can best understand it. Then we will build our model using a train set and continually test it against the test set. Finally, we will test the performance of our model.
+  
+## Techniques
+
+### Data Cleaning
+  The data has already been thoroughly cleaned and organized by the GroupLens Team.
+
+### Data Preparation
+  To prepare for data modeling we will separate our data into a validation set (90% of the data) and the training set (10% of the data). Further, in order to test out different variations of models, we will separate our training set roughly equally into 2 cross-validation sets. 
+  Also, from the brief examination of the data above, we can see that genres are not given as single variables, but as sets of variables. In other words, we are  only given a string of all the genres to which a movie applies. If we are to categorize genres into separate sets for our analysis, then all movies that contain one genre, for example 'Comedy' will not be grouped together, only movies that apply to a certain mix of genres will be grouped together. If we split up these groupings into individual variables, we can examine the frequencies that certain genres are attached to different ratings, seen below.
+```{r genres, echo=FALSE}
+sortGenreFreq
+```
+  We can see that the most frequent genres are Comedy, Drama and Action. In preparing the data, we will add new boolean variables to each rating to signal whether they are associated with these genres: isComedy, isDrama and isAction. We will then integrate these new categorizations and see how they affect the RMSE.
+
+### Data Exploration of Training Set
+
+Correlation of Rating Index with Rating Value
+```{r dataExploration2, echo=FALSE}
+rowCorrelation
+```
+
+Mean of All Ratings
+```{r dataExploration3, echo=FALSE}
+message(ratingMean)
+```
+Median of All Ratings
+```{r dataExploration4, echo=FALSE}
+message(ratingMedian)
+```
+Mode of All Ratings
+```{r dataExploration5, echo=FALSE}
+message(ratingMode)
+```
+  
+###	Data Visualization
+```{r dataVisualization1, echo=FALSE}
+hist(All_Ratings)
+```
+
+```{r dataVisualization2, echo=FALSE}
+# Histogram of User Mean Scores
+hist(Mean_Ratings_for_Each_User)
+```
+
+```{r dataVisualization3, echo=FALSE}
+# Histogram of Number of Scores per User
+hist(Number_Of_Ratings_for_Each_User)
+```
+
+```{r dataVisualization4, echo=FALSE}
+# Histogram of Movie Mean Scores
+hist(Mean_Ratings_for_Each_Movie)
+```
+
+```{r dataVisualization5, echo=FALSE}
+# Histogram of Number of Scores per Movie
+hist(Number_Of_Ratings_for_Each_Movie)
+```
+
+```{r dataVisualization6, echo=FALSE}
+# Histogram of Movie Mean Scores
+hist(Mean_Ratings_for_Each_Set_of_Genres)
+```
+    
+```{r dataVisualization7, echo=FALSE}
+# Histogram of Number of Scores per Genres
+hist(Number_Of_Ratings_for_Each_Set_of_Genres)
+```
+
+###	Insights 
+  Looking at the distribution of means within different categorizations (by user, movie and genre), we can see that they are somewhat normally distributed with a left skew. Because the raw values of the ratings and differences between ratings among these categorizations will be useful to our model we will not use mean normalization or scaling to try to normalize these distributions. Likewise, normalizing the data along one dimension may inhibit the normalization of this data along another axis.
+  
+  Above we have validated that there is no correlation between row indexes and ratings in the training set, using Pearson's correlation coefficient (r < .01). This proves that the rows are sufficiently randomized to partition into randomized subsets that still sufficiently represent the total population. 
+
+  We can also see in the histograms that the number of ratings per user, the number of ratings per movie, and the number of ratings per genre set are all right-skewed distribution, which shows that there are many ratings, users and genre sets with very little ratings. This makes sense to our assumptions that there are many more niche ratings and genres that only appeal and are rated by a small set of users. The data also validates the idea that there are many more disengaged users than engaged users. 
+  
+  Since we will create a model based on these categorizations, it would make sense for us to use regularization to minimize the value our model places on users, ratings and genre sets with low ratings. This is because there is likely not enough data for us to say how a user would rate a movie if they have not rated many movies nor if that movie or genre set does not have enough data to say what the average person would think of it.
+  
+###	Modeling Approach 1
+
+  First, we will create a model incrementally using the first cross-validation set. We will now look at the RMSE of a model that predicts a rating based on returning the mean rating of all ratings.
+  
+RMSE using Mean of All Ratings
+```{r mean, echo=FALSE}
+message(baseRMSE)
+```
+  
+  Now we will make our model more complex by partitioning the data into different categories. For each category, we will find that category's average rating. 
+  We will see how that rating differs from our previous model with a hypothetical variable *effect* where *effect* is the *average for the category the rating is in* minus the *previous model's prediction for a rating*.
+  We will then update our prediction model by adding each rating's *effect* to the *previous prediction* by its *effect*. This will get us to a closer prediction of the actual rating.
+  
+  First we will apply this method to categorization based on the user ID associated with a rating. Then we will use other categorizations to see how updating the model based on those improves our model's RMSE.
+  
+#### RMSE after Updating model based on *userId*
+```{r userEffects, echo=FALSE}
+message(userRMSE)
+```
+  
+#### RMSE after Updating model based on *genre*
+```{r genreSetEffects, echo=FALSE}
+message(genreRMSE)
+```
+  
+#### RMSE after Updating model based on *movie*
+```{r movieEffects, echo=FALSE}
+message(movieRMSE)
+```
+
+#### RMSE after Updating model based on *isComedy*
+```{r topThreeGenreEffects1, echo=FALSE}
+isComedyRMSE
+```
+
+#### RMSE after Updating model based on *isDrama*
+```{r topThreeGenreEffects2, echo=FALSE}
+isDramaRMSE
+```
+
+#### RMSE after Updating model based on *isAction*
+```{r topThreeGenreEffects3, echo=FALSE}
+isActionRMSE
+```
+
+###	Modeling Approach 2
+
+  We can see that much of our updating has decreased the RMSE. However, our new variables isComedy, isDrama, isAction did not decrease the RMSE significantly. Therefore we will leave those categorizations out in our next model.
+  Our next model will repeat the steps of the previous one, except we will explore using regularization to mitigate the effect that categories with small amounts of ratings have on the final model. In other words, if a category has a small amount of ratings, in the model updating, we will minimize the *effect* it has on deviating updated predictions for ratings within that category from the previous prediction.
+  We will do this by updating our equation for *effect* by modifying the term for the *average for the category the rating is in*. The mean of such a vector of ratings could be re-written in code as *mean(vector)* or alternatively *sum(vector)/length(vector)*. In order to minimize that term towards zero, more so with small values of *length(vector)*, we will add a constant value *lambda* to the denominator of that term.
+  Also, since we do not know the optimal value of *lambda* to reduce the RMSE of our model, we will re-try the modeling technique with 31 different values of *lambda* from 2 to 5 at .1 increments.
+  Since we are creating a new model, we will also now use our second cross-validation set to train this model.
+  
+#### RMSE of Models Varying by Lambda, followed by plot of values
+
+```{r regularization1, echo=FALSE}
+
+RegularizeRMSE
+
+```
+
+```{r regularization2, echo=FALSE}
+
+plot(RegularizeRMSE)
+
+```
+
+#### Lambda Corresponding To The Minimum RMSE
+
+```{r regularization3, echo=FALSE}
+RegularizeRMSEOptimizedLambda
+```
+  
+## Final Model
+
+### Process
+
+  Looking at the second model, we have seen that the optimal value of *lambda* to minimize the RMSE of that model is *3.5*. We will use that value with the 2nd modeling approach using regularization on the validation set to test the model for final results and get an RMSE. 
+
+### Accuracy
+#### Final RMSE
+
+```{r RMSE, echo=FALSE}
+message(validationRMSE)
+```
+### Performance
+  To assess the speed at which the final model took, we will at the number of seconds that it took to run on a specific computer.
+
+#### Computer Specifications
+
+MacBook Pro (Retina, 13-inch, Early 2015)
+Processor: 3.1 GHz Dual-Core Intel Core i7
+Memory: 16 GB 1867 MHz DDR3
+  
+#### Time in Seconds
+```{r TimeTake, echo=FALSE}
+message(totalTimeElapsed)
+```
+
+#	Conclusion
+
+##	Summary
+  We see now that the modeling approach outlined multiple times above was somewhat successful and regularization was effective in reducing the RMSE. During the final modeling, the RMSE was recorded of the simplified model using only the mean of all ratings, which we will call the "Baseline" RMSE. We will now see how that compares to the final RMSE and use that as a baseline to see how effective our optimization techniques were.
+
+### RMSE of "Baseline" RMSE
+```{r baseValidationRMSE, echo=FALSE}
+message(baseValidationRMSE)
+```
+
+### Absolute Difference between "Baseline" 
+```{r optimizationIncrease, echo=FALSE}
+message( abs( baseValidationRMSE - validationRMSE ) )
+```
+       
+##	Limitations
+  The limitations of this work discussed in this paper are a limitation on data size, computing power, time and money. While there is a fuller set of data for me to perform this analysis on, the reduction to a smaller subset was ultimately done for performance considerations due to lack of access to more powerful processors.
+      
+##	Future work
+  In the future, I hope to continue this work, using a larger data set and a higher-performing machine in which to do that analysis, to hopefully create more rigorous models for predicting movie ratings. Deep-learning and Bayesian models are an interesting area of research that I would like to explore more.
